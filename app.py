@@ -1,22 +1,17 @@
 """
-Predicción de Valencia Emocional — comparador de 3 modelos.
-Sube un video → extrae Action Units (MediaPipe) → predice valencia con NN1/NN2/NN3
-→ grafica valencia vs tiempo y compara los 3 modelos.
+Valencia Emocional — comparador de 3 modelos (NN1 MLP / NN2 LSTM / NN3 BiGRU+Attn).
+Sube un video, extrae Action Units con MediaPipe, predice valencia y compara los
+tres modelos en el tiempo.
 
-Features:
-  1. Upload de video + gráficas valencia-vs-tiempo (los 3 modelos).
-  2. Toggle de puntos de tracking facial (video anotado).
-  3. Reproducción del video.
-  4. Botón de reset.
-
-Sin datasets: solo viajan los modelos + el .task de MediaPipe.
+Features: upload, gráfica valencia-vs-tiempo (3 modelos), toggle de puntos de
+tracking, reproducción, reset, muestreo ajustable, comparación viva (stats + acuerdo).
 """
 import json, tempfile, time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 import streamlit as st
 
 import torch
@@ -28,30 +23,39 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
+# ── Paleta (data-viz: un color por modelo) ────────────────────────
+COL = {
+    "NN1 MLP":        "#6FB1E0",   # azul frío  (baseline)
+    "NN2 LSTM":       "#4FD0A8",   # verde-azulado
+    "NN3 BiGRU+Attn": "#F07167",   # rojo cálido (mejor modelo)
+}
+ROL = {
+    "NN1 MLP":        "Baseline · frame a frame",
+    "NN2 LSTM":       "Recurrente · ventana 5",
+    "NN3 BiGRU+Attn": "Bidireccional + atención",
+}
+ACCENT = "#E0A33C"
+MUTED  = "#A8A296"
+PANEL  = "#1F1D18"
+BORDER = "#322E26"
+TEXT   = "#ECE8E0"
+BG     = "#161512"
+
 AQUI = Path(__file__).parent
 CFG  = json.loads((AQUI / "model_config.json").read_text())
-TIMESTEPS = CFG["TIMESTEPS"]
-GRU_UNITS = CFG["GRU_UNITS"]
-NUM_HEADS = CFG["NUM_HEADS"]
-DROPOUT   = CFG["DROPOUT"]
-AU_COLS   = CFG["AU_COLS"]
-ESCALA    = CFG["ESCALA_FACS"]
-TASK      = str(AQUI / "face_landmarker.task")
+TIMESTEPS = CFG["TIMESTEPS"]; GRU_UNITS = CFG["GRU_UNITS"]
+NUM_HEADS = CFG["NUM_HEADS"]; DROPOUT = CFG["DROPOUT"]
+AU_COLS = CFG["AU_COLS"]; ESCALA = CFG["ESCALA_FACS"]
+TASK = str(AQUI / "face_landmarker.task")
 
-# blendshape -> AU (igual que extraer_aus.py)
 AU_MAP = {
-    "AU01_r": ["browInnerUp"],
-    "AU02_r": ["browOuterUpLeft", "browOuterUpRight"],
-    "AU04_r": ["browDownLeft", "browDownRight"],
-    "AU05_r": ["eyeWideLeft", "eyeWideRight"],
-    "AU06_r": ["cheekSquintLeft", "cheekSquintRight"],
-    "AU07_r": ["eyeSquintLeft", "eyeSquintRight"],
-    "AU12_r": ["mouthSmileLeft", "mouthSmileRight"],
-    "AU14_r": ["mouthDimpleLeft", "mouthDimpleRight"],
+    "AU01_r": ["browInnerUp"], "AU02_r": ["browOuterUpLeft", "browOuterUpRight"],
+    "AU04_r": ["browDownLeft", "browDownRight"], "AU05_r": ["eyeWideLeft", "eyeWideRight"],
+    "AU06_r": ["cheekSquintLeft", "cheekSquintRight"], "AU07_r": ["eyeSquintLeft", "eyeSquintRight"],
+    "AU12_r": ["mouthSmileLeft", "mouthSmileRight"], "AU14_r": ["mouthDimpleLeft", "mouthDimpleRight"],
     "AU15_r": ["mouthFrownLeft", "mouthFrownRight"],
     "AU17_r": ["mouthShrugUpper", "mouthPressLeft", "mouthPressRight"],
-    "AU20_r": ["mouthStretchLeft", "mouthStretchRight"],
-    "AU25_r": ["jawOpen"],
+    "AU20_r": ["mouthStretchLeft", "mouthStretchRight"], "AU25_r": ["jawOpen"],
 }
 
 # ── Arquitecturas (idénticas a entrenar_modelos.py) ───────────────
@@ -59,9 +63,7 @@ class LSTMModel(nn.Module):
     def __init__(self, n_features=12, hidden=64, dropout=0.2):
         super().__init__()
         self.lstm = nn.LSTM(n_features, hidden, batch_first=True)
-        self.drop = nn.Dropout(dropout)
-        self.fc   = nn.Linear(hidden, 1)
-        self.tanh = nn.Tanh()
+        self.drop = nn.Dropout(dropout); self.fc = nn.Linear(hidden, 1); self.tanh = nn.Tanh()
     def forward(self, x):
         out, _ = self.lstm(x)
         return self.tanh(self.fc(self.drop(out[:, -1, :])))
@@ -71,35 +73,27 @@ class BiGRUAttention(nn.Module):
         super().__init__()
         hidden = gru_units * 2
         self.bigru = nn.GRU(n_features, gru_units, batch_first=True, bidirectional=True)
-        self.ln1   = nn.LayerNorm(hidden)
-        self.attn  = nn.MultiheadAttention(hidden, num_heads, dropout=dropout, batch_first=True)
-        self.fc1   = nn.Linear(hidden, 32)
-        self.fc2   = nn.Linear(32, 1)
-        self.relu  = nn.ReLU()
-        self.tanh  = nn.Tanh()
-        self.drop  = nn.Dropout(dropout)
+        self.ln1 = nn.LayerNorm(hidden)
+        self.attn = nn.MultiheadAttention(hidden, num_heads, dropout=dropout, batch_first=True)
+        self.fc1 = nn.Linear(hidden, 32); self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU(); self.tanh = nn.Tanh(); self.drop = nn.Dropout(dropout)
     def forward(self, x):
-        out, _  = self.bigru(x)
-        out     = self.ln1(out)
+        out, _ = self.bigru(x); out = self.ln1(out)
         attn, _ = self.attn(out, out, out)
-        out     = (out + attn).mean(dim=1)
-        out     = self.drop(self.relu(self.fc1(out)))
+        out = (out + attn).mean(dim=1)
+        out = self.drop(self.relu(self.fc1(out)))
         return self.tanh(self.fc2(out))
 
-# ── Carga cacheada de modelos ─────────────────────────────────────
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def cargar_modelos():
     scaler = joblib.load(AQUI / "scaler.pkl")
-    mlp    = joblib.load(AQUI / "modelo_mlp.pkl")
-    lstm   = LSTMModel()
-    lstm.load_state_dict(torch.load(AQUI / "modelo_lstm.pt", map_location="cpu"))
-    lstm.eval()
-    bigru  = BiGRUAttention(12, GRU_UNITS, NUM_HEADS, DROPOUT)
-    bigru.load_state_dict(torch.load(AQUI / "modelo_bigru.pt", map_location="cpu"))
-    bigru.eval()
+    mlp = joblib.load(AQUI / "modelo_mlp.pkl")
+    lstm = LSTMModel(); lstm.load_state_dict(torch.load(AQUI / "modelo_lstm.pt", map_location="cpu")); lstm.eval()
+    bigru = BiGRUAttention(12, GRU_UNITS, NUM_HEADS, DROPOUT)
+    bigru.load_state_dict(torch.load(AQUI / "modelo_bigru.pt", map_location="cpu")); bigru.eval()
     return scaler, mlp, lstm, bigru
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def cargar_detector():
     opts = mp_vision.FaceLandmarkerOptions(
         base_options=mp_python.BaseOptions(model_asset_path=TASK),
@@ -107,10 +101,9 @@ def cargar_detector():
         running_mode=mp_vision.RunningMode.IMAGE)
     return mp_vision.FaceLandmarker.create_from_options(opts)
 
-def bs_to_aus(blendshapes):
-    d = {b.category_name: b.score for b in blendshapes}
-    return [float(np.clip(np.mean([d.get(n, 0.0) for n in AU_MAP[au]]) * ESCALA, 0, 5))
-            for au in AU_COLS]
+def bs_to_aus(bs):
+    d = {b.category_name: b.score for b in bs}
+    return [float(np.clip(np.mean([d.get(n, 0.0) for n in AU_MAP[au]]) * ESCALA, 0, 5)) for au in AU_COLS]
 
 def ccc(a, b):
     a, b = np.asarray(a), np.asarray(b)
@@ -118,180 +111,261 @@ def ccc(a, b):
     cov = ((a - a.mean()) * (b - b.mean())).mean()
     return float(2 * cov / (a.var() + b.var() + (a.mean() - b.mean())**2 + 1e-8))
 
-# ── Procesa el video: AUs muestreadas + video anotado opcional ────
-def procesar_video(ruta, stride, dibujar_dots, max_seg, detector, progreso):
+def procesar_video(ruta, stride, dibujar, max_seg, detector, prog):
     cap = cv2.VideoCapture(str(ruta))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     max_frames = int(max_seg * fps) if max_seg else total
-
-    tiempos, aus, frames_anot = [], [], []
+    tiempos, aus, anot = [], [], []
     fn = 0
     while True:
         ok, frame = cap.read()
-        if not ok or fn >= max_frames:
-            break
+        if not ok or fn >= max_frames: break
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         muestrear = (fn % stride == 0)
-
-        if muestrear or dibujar_dots:
+        if muestrear or dibujar:
             res = detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
             tiene = bool(res.face_blendshapes)
             if muestrear and tiene:
-                tiempos.append(fn / fps)
-                aus.append(bs_to_aus(res.face_blendshapes[0]))
-            if dibujar_dots:
+                tiempos.append(fn / fps); aus.append(bs_to_aus(res.face_blendshapes[0]))
+            if dibujar:
                 if tiene:
                     h, w = rgb.shape[:2]
                     for lm in res.face_landmarks[0]:
-                        cv2.circle(rgb, (int(lm.x * w), int(lm.y * h)), 1,
-                                   (0, 255, 0), -1)
-                frames_anot.append(rgb)
+                        cv2.circle(rgb, (int(lm.x * w), int(lm.y * h)), 1, (79, 208, 168), -1)
+                anot.append(rgb)
         fn += 1
         if total:
-            progreso.progress(min(fn / max(1, min(total, max_frames)), 1.0))
+            prog.progress(min(fn / max(1, min(total, max_frames)), 1.0))
     cap.release()
-    return fps, np.array(tiempos), np.array(aus, dtype=np.float32), frames_anot
+    return fps, np.array(tiempos), np.array(aus, dtype=np.float32), anot
 
 def predecir(aus, tiempos, scaler, mlp, lstm, bigru):
-    Xs = scaler.transform(aus).astype(np.float32)               # (N,12)
-    out = {"NN1 MLP": (tiempos, mlp.predict(Xs))}
+    Xs = scaler.transform(aus).astype(np.float32)
+    out = {"NN1 MLP": (tiempos, np.clip(mlp.predict(Xs), -1, 1))}
     if len(Xs) > TIMESTEPS:
         seqs = np.stack([Xs[i:i+TIMESTEPS] for i in range(len(Xs)-TIMESTEPS)])
         t_seq = tiempos[TIMESTEPS:]
         with torch.no_grad():
             t = torch.tensor(seqs)
-            out["NN2 LSTM"]        = (t_seq, lstm(t).numpy().flatten())
-            out["NN3 BiGRU+Attn"]  = (t_seq, bigru(t).numpy().flatten())
+            out["NN2 LSTM"] = (t_seq, lstm(t).numpy().flatten())
+            out["NN3 BiGRU+Attn"] = (t_seq, bigru(t).numpy().flatten())
     return out
 
 # ══════════════════════════════════════════════════════════════════
-st.set_page_config(page_title="Valencia Emocional — 3 modelos", layout="wide")
-st.title("Predicción de Valencia Emocional — comparación de 3 modelos")
-st.caption("NN1 MLP · NN2 LSTM · NN3 BiGRU+Attention — desde Action Units faciales (MediaPipe)")
+st.set_page_config(page_title="Valencia Emocional", page_icon="◐", layout="wide")
+
+st.markdown(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+html, body, [class*="css"], .stMarkdown, button, input, textarea {{ font-family:'Inter',system-ui,sans-serif; }}
+.block-container {{ max-width:1240px; padding-top:2.2rem; padding-bottom:4rem; }}
+#MainMenu, footer, [data-testid="stDecoration"] {{ visibility:hidden; }}
+
+/* Header */
+.vh-eyebrow {{ font-size:.72rem; letter-spacing:.22em; text-transform:uppercase;
+  color:{ACCENT}; font-weight:600; margin-bottom:.35rem; }}
+.vh-title {{ font-size:2.5rem; font-weight:700; line-height:1.04; letter-spacing:-.02em;
+  margin:0 0 .5rem 0; color:{TEXT}; }}
+.vh-sub {{ color:{MUTED}; font-size:1rem; max-width:62ch; margin:0; }}
+.vh-legend {{ display:flex; gap:1.4rem; flex-wrap:wrap; margin:1.1rem 0 .2rem; }}
+.vh-chip {{ display:flex; align-items:center; gap:.5rem; font-size:.82rem; color:{MUTED}; }}
+.vh-dot {{ width:.62rem; height:.62rem; border-radius:50%; flex:0 0 auto; }}
+.vh-chip b {{ color:{TEXT}; font-weight:600; }}
+.vh-rule {{ height:1px; background:{BORDER}; border:0; margin:1.4rem 0 1.6rem; }}
+
+/* Section labels */
+.vh-sec {{ font-size:.74rem; letter-spacing:.14em; text-transform:uppercase;
+  color:{MUTED}; font-weight:600; margin:.2rem 0 .6rem; }}
+
+/* Mono numerics in tables */
+[data-testid="stDataFrame"] {{ font-feature-settings:"tnum"; }}
+
+/* Sidebar polish */
+[data-testid="stSidebar"] {{ border-right:1px solid {BORDER}; }}
+[data-testid="stSidebar"] .vh-sec {{ margin-top:1.1rem; }}
+
+/* Buttons */
+[data-testid="stSidebar"] button[kind="secondary"] {{
+  border:1px solid {BORDER}; background:transparent; color:{MUTED}; font-weight:500; }}
+[data-testid="stSidebar"] button[kind="secondary"]:hover {{
+  border-color:{ACCENT}; color:{ACCENT}; }}
+
+/* File uploader dropzone */
+[data-testid="stFileUploaderDropzone"] {{ background:{PANEL}; border:1px dashed {BORDER}; }}
+
+/* Empty-state steps */
+.vh-steps {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:1px;
+  background:{BORDER}; border:1px solid {BORDER}; border-radius:12px; overflow:hidden; margin-top:.5rem; }}
+.vh-step {{ background:{BG}; padding:1.3rem 1.4rem; }}
+.vh-step .n {{ font-family:'IBM Plex Mono',monospace; color:{ACCENT}; font-size:.85rem; font-weight:500; }}
+.vh-step h4 {{ margin:.5rem 0 .3rem; font-size:1rem; font-weight:600; }}
+.vh-step p {{ margin:0; color:{MUTED}; font-size:.86rem; line-height:1.45; }}
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+legend = "".join(
+    f'<div class="vh-chip"><span class="vh-dot" style="background:{COL[m]}"></span>'
+    f'<b>{m}</b> · {ROL[m]}</div>' for m in COL)
+st.markdown(f"""
+<div class="vh-eyebrow">Computación afectiva · TEC</div>
+<h1 class="vh-title">Valencia emocional desde el rostro</h1>
+<p class="vh-sub">Sube un video: MediaPipe extrae las Action Units faciales y tres
+modelos predicen la valencia (de -1 a +1) cuadro a cuadro, para comparar su
+comportamiento en el tiempo.</p>
+<div class="vh-legend">{legend}</div>
+<hr class="vh-rule"/>
+""", unsafe_allow_html=True)
 
 if "k" not in st.session_state:
-    st.session_state.k = 0   # key del uploader, se incrementa al resetear
+    st.session_state.k = 0
 
+# ── Sidebar ───────────────────────────────────────────────────────
 with st.sidebar:
-    st.header("Controles")
-    stride = st.slider("Muestreo: 1 frame cada N", 1, 60, 10,
-                       help="Bajo = curvas suaves (más lento). Alto = más rápido.")
-    dots   = st.toggle("Puntos de tracking facial", value=False)
-    max_seg = st.slider("Máx. segundos a procesar", 5, 120, 30,
-                        help="Acota el costo de cómputo en videos largos.")
-    modelos_sel = st.multiselect("Modelos a mostrar",
-                        ["NN1 MLP", "NN2 LSTM", "NN3 BiGRU+Attn"],
-                        default=["NN1 MLP", "NN2 LSTM", "NN3 BiGRU+Attn"])
-    if st.button("🔄 Reset", use_container_width=True):
+    st.markdown('<div class="vh-sec">Muestreo</div>', unsafe_allow_html=True)
+    stride = st.slider("1 cuadro cada N", 1, 60, 10, label_visibility="visible",
+                       help="Menor N: curvas más suaves, más cómputo. Mayor N: más rápido.")
+    st.markdown('<div class="vh-sec">Procesamiento</div>', unsafe_allow_html=True)
+    max_seg = st.slider("Máximo de segundos", 5, 120, 30,
+                        help="Acota el cómputo en videos largos.")
+    dots = st.toggle("Puntos de tracking facial", value=False,
+                     help="Dibuja la malla facial sobre el video. Reprocesa al activar.")
+    st.markdown('<div class="vh-sec">Modelos</div>', unsafe_allow_html=True)
+    modelos_sel = st.multiselect("Mostrar en la gráfica", list(COL.keys()),
+                                 default=list(COL.keys()), label_visibility="collapsed")
+    st.markdown('<div class="vh-sec">Sesión</div>', unsafe_allow_html=True)
+    if st.button("Reiniciar análisis", use_container_width=True, type="secondary"):
         for key in list(st.session_state.keys()):
-            if key != "k":
-                del st.session_state[key]
+            if key != "k": del st.session_state[key]
         st.session_state.k += 1
         st.rerun()
 
-video = st.file_uploader("Sube un video (.mp4 / .mov / .avi)",
-                         type=["mp4", "mov", "avi", "mkv"],
-                         key=f"up_{st.session_state.k}")
+# Invalida el resultado si cambian los parámetros de procesamiento (controles vivos)
+sig = (stride, max_seg, dots)
+if st.session_state.get("sig") != sig:
+    for key in ("preds", "aus", "tiempos", "fps", "in_path", "anot_path", "t_proc"):
+        st.session_state.pop(key, None)
+    st.session_state.sig = sig
 
-# Tabla de referencia (precisión sobre el dataset etiquetado, estática)
-ref = AQUI / "comparacion_modelos.csv"
-if ref.exists():
-    with st.expander("📊 Precisión de referencia (dataset etiquetado, K-Fold)"):
-        st.dataframe(pd.read_csv(ref), use_container_width=True)
-        st.caption("CCC/MSE/R² vs etiquetas reales. No recalculable sobre un "
-                   "video sin etiquetas; sirve de referencia de exactitud.")
+video = st.file_uploader("Video", type=["mp4", "mov", "avi", "mkv"],
+                         key=f"up_{st.session_state.k}", label_visibility="collapsed")
 
-if video is not None:
-    if "preds" not in st.session_state:
-        tmp = Path(tempfile.gettempdir()) / f"in_{st.session_state.k}_{video.name}"
-        tmp.write_bytes(video.getbuffer())
-        scaler, mlp, lstm, bigru = cargar_modelos()
-        detector = cargar_detector()
-        prog = st.progress(0.0, text="Procesando video…")
-        t0 = time.time()
-        fps, tiempos, aus, frames_anot = procesar_video(
-            tmp, stride, dots, max_seg, detector, prog)
-        prog.empty()
-        if len(aus) <= TIMESTEPS:
-            st.error(f"Solo {len(aus)} muestras con cara detectada. "
-                     f"Baja el muestreo (N menor) o sube un video más largo "
-                     f"(se necesitan > {TIMESTEPS}).")
-            st.stop()
-        preds = predecir(aus, tiempos, scaler, mlp, lstm, bigru)
-        # Video anotado -> mp4 H.264 reproducible en navegador
-        anot_path = None
-        if frames_anot:
-            anot_path = str(Path(tempfile.gettempdir()) / f"anot_{st.session_state.k}.mp4")
-            imageio.mimwrite(anot_path, frames_anot, fps=fps, codec="libx264",
-                             quality=7, macro_block_size=None)
-        st.session_state.preds   = preds
-        st.session_state.aus     = aus
-        st.session_state.tiempos = tiempos
-        st.session_state.fps     = fps
-        st.session_state.in_path = str(tmp)
-        st.session_state.anot_path = anot_path
-        st.session_state.t_proc  = time.time() - t0
+# ── Empty state ───────────────────────────────────────────────────
+if video is None:
+    st.markdown("""
+    <div class="vh-steps">
+      <div class="vh-step"><div class="n">01</div><h4>Sube un video</h4>
+        <p>Un primer plano del rostro funciona mejor. Formatos mp4, mov, avi o mkv.</p></div>
+      <div class="vh-step"><div class="n">02</div><h4>Ajusta el muestreo</h4>
+        <p>Controla cada cuántos cuadros se analiza y cuántos segundos procesar.</p></div>
+      <div class="vh-step"><div class="n">03</div><h4>Compara los modelos</h4>
+        <p>Valencia vs tiempo, estadísticas por modelo y acuerdo entre ellos.</p></div>
+    </div>
+    """, unsafe_allow_html=True)
+    ref = AQUI / "comparacion_modelos.csv"
+    if ref.exists():
+        st.markdown('<div class="vh-sec" style="margin-top:2rem">Precisión de referencia · dataset etiquetado</div>',
+                    unsafe_allow_html=True)
+        dfr = pd.read_csv(ref)
+        st.dataframe(dfr, use_container_width=True, hide_index=True)
+        st.caption("CCC / MSE / R² sobre las etiquetas reales del dataset (validación K-Fold). "
+                   "No es recalculable sobre un video sin etiquetar: sirve de referencia de exactitud.")
+    st.stop()
 
-    preds   = st.session_state.preds
-    col_v, col_g = st.columns([1, 2])
+# ── Procesa (si no está en caché de sesión) ───────────────────────
+if "preds" not in st.session_state:
+    tmp = Path(tempfile.gettempdir()) / f"in_{st.session_state.k}_{video.name}"
+    tmp.write_bytes(video.getbuffer())
+    scaler, mlp, lstm, bigru = cargar_modelos()
+    detector = cargar_detector()
+    prog = st.progress(0.0, text="Extrayendo Action Units…")
+    t0 = time.time()
+    fps, tiempos, aus, anot = procesar_video(tmp, stride, dots, max_seg, detector, prog)
+    prog.empty()
+    if len(aus) <= TIMESTEPS:
+        st.error(f"Solo se detectó rostro en {len(aus)} muestras (se necesitan más de "
+                 f"{TIMESTEPS}). Baja el N de muestreo o usa un video más largo o más nítido.")
+        st.stop()
+    preds = predecir(aus, tiempos, scaler, mlp, lstm, bigru)
+    anot_path = None
+    if anot:
+        anot_path = str(Path(tempfile.gettempdir()) / f"anot_{st.session_state.k}.mp4")
+        imageio.mimwrite(anot_path, anot, fps=fps, codec="libx264", quality=7, macro_block_size=None)
+    st.session_state.update(preds=preds, aus=aus, tiempos=tiempos, fps=fps,
+                            in_path=str(tmp), anot_path=anot_path, t_proc=time.time()-t0)
 
-    with col_v:
-        st.subheader("Reproducción")
-        if dots and st.session_state.get("anot_path"):
-            st.video(st.session_state.anot_path)
-            st.caption("Con puntos de tracking.")
-        else:
-            st.video(st.session_state.in_path)
-            if dots:
-                st.info("Activa el toggle ANTES de subir para generar el video anotado.")
-        st.metric("Tiempo de procesamiento", f"{st.session_state.t_proc:.1f} s")
+preds = st.session_state.preds
+n_muestras = len(st.session_state.tiempos)
+dur = float(st.session_state.tiempos[-1]) if n_muestras else 0.0
 
-    with col_g:
-        st.subheader("Valencia vs tiempo")
-        colores = {"NN1 MLP": "#5B9BD5", "NN2 LSTM": "#ED7D31",
-                   "NN3 BiGRU+Attn": "#70AD47"}
-        fig, ax = plt.subplots(figsize=(9, 4))
-        for nombre in modelos_sel:
-            if nombre in preds:
-                t, v = preds[nombre]
-                ax.plot(t, v, label=nombre, color=colores[nombre], linewidth=2)
-        ax.axhline(0, color="gray", ls=":", lw=0.8)
-        ax.set_xlabel("Tiempo (s)"); ax.set_ylabel("Valencia [-1, 1]")
-        ax.set_ylim(-1.1, 1.1); ax.grid(alpha=0.3); ax.legend()
-        st.pyplot(fig)
+# ── Resultados ────────────────────────────────────────────────────
+col_v, col_g = st.columns([5, 7], gap="large")
 
-    # Comparación viva de los 3 modelos
-    st.subheader("Comparación de los 3 modelos (sobre este video)")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Estadísticas por modelo**")
-        filas = []
-        for nombre in modelos_sel:
-            if nombre in preds:
-                _, v = preds[nombre]
-                filas.append({"Modelo": nombre, "Valencia media": round(float(v.mean()), 3),
-                              "Desv.": round(float(v.std()), 3),
-                              "Mín": round(float(v.min()), 3),
-                              "Máx": round(float(v.max()), 3),
-                              "% positiva": round(float((v > 0).mean()) * 100, 1)})
-        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
-    with c2:
-        st.markdown("**Acuerdo entre modelos** (CCC / Pearson)")
-        nombres = [n for n in modelos_sel if n in preds]
-        ag = []
-        for i in range(len(nombres)):
-            for j in range(i+1, len(nombres)):
-                ta, va = preds[nombres[i]]; tb, vb = preds[nombres[j]]
-                n = min(len(va), len(vb))
-                if n >= 2:
-                    va2, vb2 = va[-n:], vb[-n:]
-                    ag.append({"Par": f"{nombres[i]} ↔ {nombres[j]}",
-                               "CCC": round(ccc(va2, vb2), 3),
-                               "Pearson": round(float(np.corrcoef(va2, vb2)[0, 1]), 3)})
-        if ag:
-            st.dataframe(pd.DataFrame(ag), use_container_width=True, hide_index=True)
-        st.caption("Acuerdo entre las predicciones de los modelos (no exactitud: el "
-                   "video no tiene valencia real etiquetada).")
-else:
-    st.info("⬆️ Sube un video para comenzar. Ajusta el muestreo y los toggles en la barra lateral.")
+with col_v:
+    st.markdown('<div class="vh-sec">Reproducción</div>', unsafe_allow_html=True)
+    if dots and st.session_state.get("anot_path"):
+        st.video(st.session_state.anot_path)
+    else:
+        st.video(st.session_state.in_path)
+    st.caption(f"{n_muestras} muestras · {dur:.1f}s analizados · "
+               f"{st.session_state.t_proc:.1f}s de proceso"
+               + (" · puntos activos" if dots and st.session_state.get("anot_path") else ""))
+
+with col_g:
+    st.markdown('<div class="vh-sec">Valencia vs tiempo</div>', unsafe_allow_html=True)
+    fig = go.Figure()
+    for m in modelos_sel:
+        if m in preds:
+            t, v = preds[m]
+            fig.add_trace(go.Scatter(x=t, y=v, name=m, mode="lines",
+                          line=dict(color=COL[m], width=2.4),
+                          hovertemplate=f"<b>{m}</b><br>%{{x:.1f}}s · %{{y:.3f}}<extra></extra>"))
+    fig.add_hline(y=0, line=dict(color=BORDER, width=1, dash="dot"))
+    fig.update_layout(
+        height=360, margin=dict(l=8, r=8, t=10, b=8),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=MUTED, family="Inter"),
+        yaxis=dict(range=[-1.05, 1.05], title="Valencia", gridcolor=BORDER, zeroline=False),
+        xaxis=dict(title="Tiempo (s)", gridcolor=BORDER, zeroline=False),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0,
+                    bgcolor="rgba(0,0,0,0)"))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    if not modelos_sel:
+        st.caption("Selecciona al menos un modelo en la barra lateral.")
+
+st.markdown('<hr class="vh-rule"/>', unsafe_allow_html=True)
+
+c1, c2 = st.columns([7, 5], gap="large")
+with c1:
+    st.markdown('<div class="vh-sec">Resumen por modelo · este video</div>', unsafe_allow_html=True)
+    filas = []
+    for m in modelos_sel:
+        if m in preds:
+            _, v = preds[m]
+            filas.append({"Modelo": m, "Media": round(float(v.mean()), 3),
+                          "Desv.": round(float(v.std()), 3),
+                          "Mín": round(float(v.min()), 3), "Máx": round(float(v.max()), 3),
+                          "% positiva": round(float((v > 0).mean()) * 100, 1)})
+    if filas:
+        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True,
+                     column_config={"% positiva": st.column_config.NumberColumn(format="%.1f%%")})
+
+with c2:
+    st.markdown('<div class="vh-sec">Acuerdo entre modelos</div>', unsafe_allow_html=True)
+    nombres = [n for n in modelos_sel if n in preds]
+    ag = []
+    for i in range(len(nombres)):
+        for j in range(i + 1, len(nombres)):
+            _, va = preds[nombres[i]]; _, vb = preds[nombres[j]]
+            n = min(len(va), len(vb))
+            if n >= 2:
+                va2, vb2 = va[-n:], vb[-n:]
+                ag.append({"Par": f"{nombres[i].split()[0]} ↔ {nombres[j].split()[0]}",
+                           "CCC": round(ccc(va2, vb2), 3),
+                           "Pearson": round(float(np.corrcoef(va2, vb2)[0, 1]), 3)})
+    if ag:
+        st.dataframe(pd.DataFrame(ag), use_container_width=True, hide_index=True)
+    st.caption("Concordancia entre las predicciones de los modelos, no su exactitud: "
+               "el video no tiene valencia real etiquetada.")
