@@ -25,21 +25,17 @@ from mediapipe.tasks.python import vision as mp_vision
 
 # ── Paleta (data-viz: un color por modelo) ────────────────────────
 COL = {
-    "NN1 MLP":        "#6FB1E0",   # azul frío  (baseline)
-    "NN2 LSTM":       "#4FD0A8",   # verde-azulado
-    "NN3 BiGRU+Attn": "#F07167",   # rojo cálido (mejor modelo)
+    "NN1 MLP":        "#6FB1E0",
+    "NN2 LSTM":       "#4FD0A8",
+    "NN3 BiGRU+Attn": "#F07167",
 }
 ROL = {
-    "NN1 MLP":        "Baseline · frame a frame",
-    "NN2 LSTM":       "Recurrente · ventana 5",
-    "NN3 BiGRU+Attn": "Bidireccional + atención",
+    "NN1 MLP":        "Baseline",
+    "NN2 LSTM":       "Recurrente",
+    "NN3 BiGRU+Attn": "Atención",
 }
-ACCENT = "#E0A33C"
-MUTED  = "#A8A296"
-PANEL  = "#1F1D18"
-BORDER = "#322E26"
-TEXT   = "#ECE8E0"
-BG     = "#161512"
+ACCENT = "#E0A33C"; MUTED = "#A8A296"; PANEL = "#1F1D18"
+BORDER = "#322E26"; TEXT = "#ECE8E0"; BG = "#161512"
 
 AQUI = Path(__file__).parent
 CFG  = json.loads((AQUI / "model_config.json").read_text())
@@ -58,7 +54,6 @@ AU_MAP = {
     "AU20_r": ["mouthStretchLeft", "mouthStretchRight"], "AU25_r": ["jawOpen"],
 }
 
-# ── Arquitecturas (idénticas a entrenar_modelos.py) ───────────────
 class LSTMModel(nn.Module):
     def __init__(self, n_features=12, hidden=64, dropout=0.2):
         super().__init__()
@@ -153,127 +148,108 @@ def predecir(aus, tiempos, scaler, mlp, lstm, bigru):
     return out
 
 # ══════════════════════════════════════════════════════════════════
-st.set_page_config(page_title="Valencia Emocional", page_icon="◐", layout="wide")
+st.set_page_config(page_title="Valencia Emocional", page_icon="◐", layout="centered")
 
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 html, body, [class*="css"], .stMarkdown, button, input, textarea {{ font-family:'Inter',system-ui,sans-serif; }}
-.block-container {{ max-width:1240px; padding-top:2.2rem; padding-bottom:4rem; }}
+.block-container {{ max-width:780px !important; padding-top:3rem; padding-bottom:6rem; }}
 #MainMenu, footer, [data-testid="stDecoration"] {{ visibility:hidden; }}
+hr {{ border:0; border-top:1px solid {BORDER}; margin:1.6rem 0; }}
 
-/* Header */
-.vh-eyebrow {{ font-size:.72rem; letter-spacing:.22em; text-transform:uppercase;
-  color:{ACCENT}; font-weight:600; margin-bottom:.35rem; }}
-.vh-title {{ font-size:2.5rem; font-weight:700; line-height:1.04; letter-spacing:-.02em;
-  margin:0 0 .5rem 0; color:{TEXT}; }}
-.vh-sub {{ color:{MUTED}; font-size:1rem; max-width:62ch; margin:0; }}
-.vh-legend {{ display:flex; gap:1.4rem; flex-wrap:wrap; margin:1.1rem 0 .2rem; }}
-.vh-chip {{ display:flex; align-items:center; gap:.5rem; font-size:.82rem; color:{MUTED}; }}
-.vh-dot {{ width:.62rem; height:.62rem; border-radius:50%; flex:0 0 auto; }}
+.vh-eyebrow {{ font-size:.7rem; letter-spacing:.22em; text-transform:uppercase;
+  color:{ACCENT}; font-weight:600; margin-bottom:.4rem; }}
+.vh-title {{ font-size:2.25rem; font-weight:700; line-height:1.05; letter-spacing:-.02em;
+  margin:0 0 .55rem 0; color:{TEXT}; }}
+.vh-sub {{ color:{MUTED}; font-size:.98rem; line-height:1.55; max-width:60ch; margin:0; }}
+.vh-legend {{ display:flex; gap:1.3rem; flex-wrap:wrap; margin:1.1rem 0 0; }}
+.vh-chip {{ display:flex; align-items:center; gap:.5rem; font-size:.8rem; color:{MUTED}; }}
+.vh-dot {{ width:.6rem; height:.6rem; border-radius:50%; flex:0 0 auto; }}
 .vh-chip b {{ color:{TEXT}; font-weight:600; }}
-.vh-rule {{ height:1px; background:{BORDER}; border:0; margin:1.4rem 0 1.6rem; }}
+.vh-sec {{ font-size:.72rem; letter-spacing:.14em; text-transform:uppercase;
+  color:{MUTED}; font-weight:600; margin:.2rem 0 .7rem; }}
 
-/* Section labels */
-.vh-sec {{ font-size:.74rem; letter-spacing:.14em; text-transform:uppercase;
-  color:{MUTED}; font-weight:600; margin:.2rem 0 .6rem; }}
+/* Upload zone: calm, single focus */
+[data-testid="stFileUploaderDropzone"] {{ background:{PANEL}; border:1px dashed {BORDER};
+  border-radius:12px; padding:1.6rem; }}
+[data-testid="stFileUploaderDropzone"]:hover {{ border-color:{ACCENT}; }}
 
-/* Mono numerics in tables */
+/* Settings popover trigger + secondary buttons: ghost style */
+button[kind="secondary"], [data-testid="stPopover"] button {{
+  border:1px solid {BORDER} !important; background:transparent !important;
+  color:{MUTED} !important; font-weight:500 !important; border-radius:9px !important; }}
+button[kind="secondary"]:hover, [data-testid="stPopover"] button:hover {{
+  border-color:{ACCENT} !important; color:{ACCENT} !important; }}
+
 [data-testid="stDataFrame"] {{ font-feature-settings:"tnum"; }}
-
-/* Sidebar polish */
-[data-testid="stSidebar"] {{ border-right:1px solid {BORDER}; }}
-[data-testid="stSidebar"] .vh-sec {{ margin-top:1.1rem; }}
-
-/* Buttons */
-[data-testid="stSidebar"] button[kind="secondary"] {{
-  border:1px solid {BORDER}; background:transparent; color:{MUTED}; font-weight:500; }}
-[data-testid="stSidebar"] button[kind="secondary"]:hover {{
-  border-color:{ACCENT}; color:{ACCENT}; }}
-
-/* File uploader dropzone */
-[data-testid="stFileUploaderDropzone"] {{ background:{PANEL}; border:1px dashed {BORDER}; }}
-
-/* Empty-state steps */
-.vh-steps {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:1px;
-  background:{BORDER}; border:1px solid {BORDER}; border-radius:12px; overflow:hidden; margin-top:.5rem; }}
-.vh-step {{ background:{BG}; padding:1.3rem 1.4rem; }}
-.vh-step .n {{ font-family:'IBM Plex Mono',monospace; color:{ACCENT}; font-size:.85rem; font-weight:500; }}
-.vh-step h4 {{ margin:.5rem 0 .3rem; font-size:1rem; font-weight:600; }}
-.vh-step p {{ margin:0; color:{MUTED}; font-size:.86rem; line-height:1.45; }}
+[data-testid="stExpander"] {{ border:1px solid {BORDER}; border-radius:10px; background:transparent; }}
 </style>
 """, unsafe_allow_html=True)
 
-# Header
 legend = "".join(
     f'<div class="vh-chip"><span class="vh-dot" style="background:{COL[m]}"></span>'
     f'<b>{m}</b> · {ROL[m]}</div>' for m in COL)
 st.markdown(f"""
 <div class="vh-eyebrow">Computación afectiva · TEC</div>
 <h1 class="vh-title">Valencia emocional desde el rostro</h1>
-<p class="vh-sub">Sube un video: MediaPipe extrae las Action Units faciales y tres
-modelos predicen la valencia (de -1 a +1) cuadro a cuadro, para comparar su
-comportamiento en el tiempo.</p>
+<p class="vh-sub">MediaPipe extrae las Action Units faciales y tres modelos predicen
+la valencia (de -1 a +1) cuadro a cuadro. Sube un video para comparar cómo se
+comportan en el tiempo.</p>
 <div class="vh-legend">{legend}</div>
-<hr class="vh-rule"/>
 """, unsafe_allow_html=True)
+st.markdown("<hr/>", unsafe_allow_html=True)
 
 if "k" not in st.session_state:
     st.session_state.k = 0
 
-# ── Sidebar ───────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown('<div class="vh-sec">Muestreo</div>', unsafe_allow_html=True)
-    stride = st.slider("1 cuadro cada N", 1, 60, 10, label_visibility="visible",
-                       help="Menor N: curvas más suaves, más cómputo. Mayor N: más rápido.")
-    st.markdown('<div class="vh-sec">Procesamiento</div>', unsafe_allow_html=True)
-    max_seg = st.slider("Máximo de segundos", 5, 120, 30,
-                        help="Acota el cómputo en videos largos.")
-    dots = st.toggle("Puntos de tracking facial", value=False,
-                     help="Dibuja la malla facial sobre el video. Reprocesa al activar.")
-    st.markdown('<div class="vh-sec">Modelos</div>', unsafe_allow_html=True)
-    modelos_sel = st.multiselect("Mostrar en la gráfica", list(COL.keys()),
-                                 default=list(COL.keys()), label_visibility="collapsed")
-    st.markdown('<div class="vh-sec">Sesión</div>', unsafe_allow_html=True)
-    if st.button("Reiniciar análisis", use_container_width=True, type="secondary"):
-        for key in list(st.session_state.keys()):
-            if key != "k": del st.session_state[key]
-        st.session_state.k += 1
-        st.rerun()
+# ── Barra de acciones: subir (izq) + ajustes (der) ────────────────
+left, right = st.columns([1, 1], gap="small", vertical_alignment="center")
+with right:
+    rc1, rc2 = st.columns(2, gap="small")
+    with rc1:
+        with st.popover("Ajustes", use_container_width=True):
+            st.markdown('<div class="vh-sec">Muestreo</div>', unsafe_allow_html=True)
+            stride = st.number_input("Analizar 1 de cada N cuadros", 1, 60, 10, step=1,
+                                     help="Menor N: curvas más suaves, más cómputo.")
+            st.markdown('<div class="vh-sec">Procesamiento</div>', unsafe_allow_html=True)
+            max_seg = st.number_input("Segundos máximos a procesar", 5, 120, 30, step=5,
+                                      help="Acota el cómputo en videos largos.")
+            dots = st.toggle("Puntos de tracking facial", value=False,
+                             help="Dibuja la malla facial sobre el video. Reprocesa al cambiar.")
+    with rc2:
+        reset = st.button("Reiniciar", use_container_width=True, type="secondary")
 
-# Invalida el resultado si cambian los parámetros de procesamiento (controles vivos)
+if reset:
+    for key in list(st.session_state.keys()):
+        if key != "k": del st.session_state[key]
+    st.session_state.k += 1
+    st.rerun()
+
+# Controles vivos: si cambia un parámetro de proceso, invalida el resultado
 sig = (stride, max_seg, dots)
 if st.session_state.get("sig") != sig:
     for key in ("preds", "aus", "tiempos", "fps", "in_path", "anot_path", "t_proc"):
         st.session_state.pop(key, None)
     st.session_state.sig = sig
 
-video = st.file_uploader("Video", type=["mp4", "mov", "avi", "mkv"],
-                         key=f"up_{st.session_state.k}", label_visibility="collapsed")
+with left:
+    video = st.file_uploader("Video", type=["mp4", "mov", "avi", "mkv"],
+                             key=f"up_{st.session_state.k}", label_visibility="collapsed")
 
-# ── Empty state ───────────────────────────────────────────────────
+# ── Empty state: mínimo y calmo ───────────────────────────────────
 if video is None:
-    st.markdown("""
-    <div class="vh-steps">
-      <div class="vh-step"><div class="n">01</div><h4>Sube un video</h4>
-        <p>Un primer plano del rostro funciona mejor. Formatos mp4, mov, avi o mkv.</p></div>
-      <div class="vh-step"><div class="n">02</div><h4>Ajusta el muestreo</h4>
-        <p>Controla cada cuántos cuadros se analiza y cuántos segundos procesar.</p></div>
-      <div class="vh-step"><div class="n">03</div><h4>Compara los modelos</h4>
-        <p>Valencia vs tiempo, estadísticas por modelo y acuerdo entre ellos.</p></div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.caption("Un primer plano del rostro funciona mejor. mp4, mov, avi o mkv. "
+               "Ajusta el muestreo en Ajustes.")
     ref = AQUI / "comparacion_modelos.csv"
     if ref.exists():
-        st.markdown('<div class="vh-sec" style="margin-top:2rem">Precisión de referencia · dataset etiquetado</div>',
-                    unsafe_allow_html=True)
-        dfr = pd.read_csv(ref)
-        st.dataframe(dfr, use_container_width=True, hide_index=True)
-        st.caption("CCC / MSE / R² sobre las etiquetas reales del dataset (validación K-Fold). "
-                   "No es recalculable sobre un video sin etiquetar: sirve de referencia de exactitud.")
+        with st.expander("Precisión de referencia de los modelos"):
+            st.dataframe(pd.read_csv(ref), use_container_width=True, hide_index=True)
+            st.caption("CCC / MSE / R² sobre las etiquetas reales del dataset (validación K-Fold). "
+                       "No es recalculable sobre un video sin etiquetar.")
     st.stop()
 
-# ── Procesa (si no está en caché de sesión) ───────────────────────
+# ── Procesa ───────────────────────────────────────────────────────
 if "preds" not in st.session_state:
     tmp = Path(tempfile.gettempdir()) / f"in_{st.session_state.k}_{video.name}"
     tmp.write_bytes(video.getbuffer())
@@ -285,7 +261,7 @@ if "preds" not in st.session_state:
     prog.empty()
     if len(aus) <= TIMESTEPS:
         st.error(f"Solo se detectó rostro en {len(aus)} muestras (se necesitan más de "
-                 f"{TIMESTEPS}). Baja el N de muestreo o usa un video más largo o más nítido.")
+                 f"{TIMESTEPS}). Baja el N de muestreo o usa un video más largo o nítido.")
         st.stop()
     preds = predecir(aus, tiempos, scaler, mlp, lstm, bigru)
     anot_path = None
@@ -299,73 +275,72 @@ preds = st.session_state.preds
 n_muestras = len(st.session_state.tiempos)
 dur = float(st.session_state.tiempos[-1]) if n_muestras else 0.0
 
-# ── Resultados ────────────────────────────────────────────────────
-col_v, col_g = st.columns([5, 7], gap="large")
+# ── Video ─────────────────────────────────────────────────────────
+if dots and st.session_state.get("anot_path"):
+    st.video(st.session_state.anot_path)
+else:
+    st.video(st.session_state.in_path)
+st.caption(f"{n_muestras} muestras · {dur:.1f}s analizados · {st.session_state.t_proc:.1f}s de proceso"
+           + (" · puntos activos" if dots and st.session_state.get("anot_path") else ""))
 
-with col_v:
-    st.markdown('<div class="vh-sec">Reproducción</div>', unsafe_allow_html=True)
-    if dots and st.session_state.get("anot_path"):
-        st.video(st.session_state.anot_path)
-    else:
-        st.video(st.session_state.in_path)
-    st.caption(f"{n_muestras} muestras · {dur:.1f}s analizados · "
-               f"{st.session_state.t_proc:.1f}s de proceso"
-               + (" · puntos activos" if dots and st.session_state.get("anot_path") else ""))
+# ── Gráfica ───────────────────────────────────────────────────────
+st.markdown("<hr/>", unsafe_allow_html=True)
+gc1, gc2 = st.columns([1, 1], gap="small", vertical_alignment="center")
+with gc1:
+    st.markdown('<div class="vh-sec" style="margin-bottom:0">Valencia vs tiempo</div>', unsafe_allow_html=True)
+with gc2:
+    modelos_sel = st.segmented_control(
+        "Modelos", list(COL.keys()), selection_mode="multi",
+        default=list(COL.keys()), label_visibility="collapsed")
 
-with col_g:
-    st.markdown('<div class="vh-sec">Valencia vs tiempo</div>', unsafe_allow_html=True)
-    fig = go.Figure()
-    for m in modelos_sel:
-        if m in preds:
-            t, v = preds[m]
-            fig.add_trace(go.Scatter(x=t, y=v, name=m, mode="lines",
-                          line=dict(color=COL[m], width=2.4),
-                          hovertemplate=f"<b>{m}</b><br>%{{x:.1f}}s · %{{y:.3f}}<extra></extra>"))
-    fig.add_hline(y=0, line=dict(color=BORDER, width=1, dash="dot"))
-    fig.update_layout(
-        height=360, margin=dict(l=8, r=8, t=10, b=8),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color=MUTED, family="Inter"),
-        yaxis=dict(range=[-1.05, 1.05], title="Valencia", gridcolor=BORDER, zeroline=False),
-        xaxis=dict(title="Tiempo (s)", gridcolor=BORDER, zeroline=False),
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0,
-                    bgcolor="rgba(0,0,0,0)"))
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    if not modelos_sel:
-        st.caption("Selecciona al menos un modelo en la barra lateral.")
+fig = go.Figure()
+for m in (modelos_sel or []):
+    if m in preds:
+        t, v = preds[m]
+        fig.add_trace(go.Scatter(x=t, y=v, name=m.split()[0], mode="lines",
+                      line=dict(color=COL[m], width=2.4),
+                      hovertemplate=f"<b>{m}</b><br>%{{x:.1f}}s · %{{y:.3f}}<extra></extra>"))
+fig.add_hline(y=0, line=dict(color=BORDER, width=1, dash="dot"))
+fig.update_layout(
+    height=320, margin=dict(l=4, r=4, t=24, b=4),
+    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(color=MUTED, family="Inter", size=12),
+    yaxis=dict(range=[-1.05, 1.05], title="Valencia", gridcolor=BORDER, zeroline=False),
+    xaxis=dict(title="Tiempo (s)", gridcolor=BORDER, zeroline=False),
+    hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"))
+st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+if not modelos_sel:
+    st.caption("Selecciona al menos un modelo.")
 
-st.markdown('<hr class="vh-rule"/>', unsafe_allow_html=True)
+# ── Comparación ───────────────────────────────────────────────────
+st.markdown("<hr/>", unsafe_allow_html=True)
+st.markdown('<div class="vh-sec">Resumen por modelo · este video</div>', unsafe_allow_html=True)
+filas = []
+for m in (modelos_sel or list(COL.keys())):
+    if m in preds:
+        _, v = preds[m]
+        filas.append({"Modelo": m, "Media": round(float(v.mean()), 3),
+                      "Desv.": round(float(v.std()), 3),
+                      "Mín": round(float(v.min()), 3), "Máx": round(float(v.max()), 3),
+                      "% positiva": round(float((v > 0).mean()) * 100, 1)})
+if filas:
+    st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True,
+                 column_config={"% positiva": st.column_config.NumberColumn(format="%.1f%%")})
 
-c1, c2 = st.columns([7, 5], gap="large")
-with c1:
-    st.markdown('<div class="vh-sec">Resumen por modelo · este video</div>', unsafe_allow_html=True)
-    filas = []
-    for m in modelos_sel:
-        if m in preds:
-            _, v = preds[m]
-            filas.append({"Modelo": m, "Media": round(float(v.mean()), 3),
-                          "Desv.": round(float(v.std()), 3),
-                          "Mín": round(float(v.min()), 3), "Máx": round(float(v.max()), 3),
-                          "% positiva": round(float((v > 0).mean()) * 100, 1)})
-    if filas:
-        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True,
-                     column_config={"% positiva": st.column_config.NumberColumn(format="%.1f%%")})
-
-with c2:
-    st.markdown('<div class="vh-sec">Acuerdo entre modelos</div>', unsafe_allow_html=True)
-    nombres = [n for n in modelos_sel if n in preds]
-    ag = []
-    for i in range(len(nombres)):
-        for j in range(i + 1, len(nombres)):
-            _, va = preds[nombres[i]]; _, vb = preds[nombres[j]]
-            n = min(len(va), len(vb))
-            if n >= 2:
-                va2, vb2 = va[-n:], vb[-n:]
-                ag.append({"Par": f"{nombres[i].split()[0]} ↔ {nombres[j].split()[0]}",
-                           "CCC": round(ccc(va2, vb2), 3),
-                           "Pearson": round(float(np.corrcoef(va2, vb2)[0, 1]), 3)})
-    if ag:
-        st.dataframe(pd.DataFrame(ag), use_container_width=True, hide_index=True)
-    st.caption("Concordancia entre las predicciones de los modelos, no su exactitud: "
-               "el video no tiene valencia real etiquetada.")
+st.markdown('<div class="vh-sec" style="margin-top:1.6rem">Acuerdo entre modelos</div>', unsafe_allow_html=True)
+nombres = [n for n in (modelos_sel or list(COL.keys())) if n in preds]
+ag = []
+for i in range(len(nombres)):
+    for j in range(i + 1, len(nombres)):
+        _, va = preds[nombres[i]]; _, vb = preds[nombres[j]]
+        n = min(len(va), len(vb))
+        if n >= 2:
+            va2, vb2 = va[-n:], vb[-n:]
+            ag.append({"Par": f"{nombres[i].split()[0]} ↔ {nombres[j].split()[0]}",
+                       "CCC": round(ccc(va2, vb2), 3),
+                       "Pearson": round(float(np.corrcoef(va2, vb2)[0, 1]), 3)})
+if ag:
+    st.dataframe(pd.DataFrame(ag), use_container_width=True, hide_index=True)
+st.caption("Concordancia entre las predicciones de los modelos, no su exactitud: "
+           "el video no tiene valencia real etiquetada.")
