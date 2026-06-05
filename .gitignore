@@ -1,0 +1,16 @@
+# NUNCA subir datos (caras de menores) — privacidad
+data/
+*.zip
+*_aus.csv
+*_valences.csv
+videos/
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# temporales
+__pycache__/
+*.pyc
+.venv/
+.streamlit/secrets.toml

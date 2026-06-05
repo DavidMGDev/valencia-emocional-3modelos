@@ -1,0 +1,21 @@
+{
+  "TIMESTEPS": 5,
+  "GRU_UNITS": 32,
+  "NUM_HEADS": 4,
+  "DROPOUT": 0.3,
+  "AU_COLS": [
+    "AU01_r",
+    "AU02_r",
+    "AU04_r",
+    "AU05_r",
+    "AU06_r",
+    "AU07_r",
+    "AU12_r",
+    "AU14_r",
+    "AU15_r",
+    "AU17_r",
+    "AU20_r",
+    "AU25_r"
+  ],
+  "ESCALA_FACS": 5.0
+}
