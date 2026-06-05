@@ -203,22 +203,20 @@ st.markdown("<hr/>", unsafe_allow_html=True)
 if "k" not in st.session_state:
     st.session_state.k = 0
 
-# ── Barra de acciones: subir (izq) + ajustes (der) ────────────────
-left, right = st.columns([1, 1], gap="small", vertical_alignment="center")
-with right:
-    rc1, rc2 = st.columns(2, gap="small")
-    with rc1:
-        with st.popover("Ajustes", use_container_width=True):
-            st.markdown('<div class="vh-sec">Muestreo</div>', unsafe_allow_html=True)
-            stride = st.number_input("Analizar 1 de cada N cuadros", 1, 60, 10, step=1,
-                                     help="Menor N: curvas más suaves, más cómputo.")
-            st.markdown('<div class="vh-sec">Procesamiento</div>', unsafe_allow_html=True)
-            max_seg = st.number_input("Segundos máximos a procesar", 5, 120, 30, step=5,
-                                      help="Acota el cómputo en videos largos.")
-            dots = st.toggle("Puntos de tracking facial", value=False,
-                             help="Dibuja la malla facial sobre el video. Reprocesa al cambiar.")
-    with rc2:
-        reset = st.button("Reiniciar", use_container_width=True, type="secondary")
+# ── Barra de acciones (derecha): ajustes + reiniciar ──────────────
+_, a1, a2 = st.columns([6, 2, 2], gap="small", vertical_alignment="center")
+with a1:
+    with st.popover("Ajustes", use_container_width=True):
+        st.markdown('<div class="vh-sec">Muestreo</div>', unsafe_allow_html=True)
+        stride = st.number_input("Analizar 1 de cada N cuadros", 1, 60, 10, step=1,
+                                 help="Menor N: curvas más suaves, más cómputo.")
+        st.markdown('<div class="vh-sec">Procesamiento</div>', unsafe_allow_html=True)
+        max_seg = st.number_input("Segundos máximos a procesar", 5, 120, 30, step=5,
+                                  help="Acota el cómputo en videos largos.")
+        dots = st.toggle("Puntos de tracking facial", value=False,
+                         help="Dibuja la malla facial sobre el video. Reprocesa al cambiar.")
+with a2:
+    reset = st.button("Reiniciar", use_container_width=True, type="secondary")
 
 if reset:
     for key in list(st.session_state.keys()):
@@ -233,9 +231,8 @@ if st.session_state.get("sig") != sig:
         st.session_state.pop(key, None)
     st.session_state.sig = sig
 
-with left:
-    video = st.file_uploader("Video", type=["mp4", "mov", "avi", "mkv"],
-                             key=f"up_{st.session_state.k}", label_visibility="collapsed")
+video = st.file_uploader("Video", type=["mp4", "mov", "avi", "mkv"],
+                         key=f"up_{st.session_state.k}", label_visibility="collapsed")
 
 # ── Empty state: mínimo y calmo ───────────────────────────────────
 if video is None:
