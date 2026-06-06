@@ -88,9 +88,10 @@ def ccc(a, b):
 
 MAX_W = 640   # downscale para acotar RAM/CPU en el plan gratuito
 
-def procesar_video(ruta, stride, dibujar, max_seg, detector, prog, anot_path):
+def procesar_video(ruta, fps_obj, dibujar, max_seg, detector, prog, anot_path):
     cap = cv2.VideoCapture(str(ruta))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    stride = max(1, round(fps / max(0.1, fps_obj)))   # cuadros/seg -> 1 de cada N
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     max_frames = int(max_seg * fps) if max_seg else total
     tiempos, aus = [], []
@@ -170,12 +171,19 @@ hr {{ border:0; border-top:1px solid {BORDER}; margin:1.6rem 0; }}
   border-radius:12px; padding:1.6rem; }}
 [data-testid="stFileUploaderDropzone"]:hover {{ border-color:{ACCENT}; }}
 
-/* Settings popover trigger + secondary buttons: ghost style */
-button[kind="secondary"], [data-testid="stPopover"] button {{
+/* Secondary buttons: ghost outline */
+button[kind="secondary"] {{
   border:1px solid {BORDER} !important; background:transparent !important;
   color:{MUTED} !important; font-weight:500 !important; border-radius:9px !important; }}
-button[kind="secondary"]:hover, [data-testid="stPopover"] button:hover {{
-  border-color:{ACCENT} !important; color:{ACCENT} !important; }}
+button[kind="secondary"]:hover {{ border-color:{ACCENT} !important; color:{ACCENT} !important; }}
+
+/* Popover trigger styled as an inline clickable word */
+[data-testid="stPopover"] {{ margin-top:.7rem; }}
+[data-testid="stPopover"] > button {{
+  border:none !important; background:transparent !important; padding:0 !important;
+  min-height:auto !important; color:{ACCENT} !important; font-size:.82rem !important;
+  font-weight:500 !important; text-decoration:underline; text-underline-offset:3px; }}
+[data-testid="stPopover"] > button:hover {{ color:{TEXT} !important; }}
 
 [data-testid="stDataFrame"] {{ font-feature-settings:"tnum"; }}
 [data-testid="stExpander"] {{ border:1px solid {BORDER}; border-radius:10px; background:transparent; }}
@@ -207,27 +215,21 @@ st.markdown("""
 
 # ── Ajustes (visibles, inline) ────────────────────────────────────
 st.markdown('<div class="vh-sec" style="margin-top:1.7rem">Ajustes</div>', unsafe_allow_html=True)
-s1, s2, s3, s4 = st.columns([3, 3, 3, 2], gap="medium", vertical_alignment="bottom")
+s1, s2, s3 = st.columns(3, gap="medium", vertical_alignment="bottom")
 with s1:
-    stride = st.number_input("1 de cada N cuadros", 1, 60, 10, step=1,
-                             help="Menor N: curvas más suaves, más cómputo.")
+    fps_obj = st.number_input("Cuadros por segundo", 1, 30, 3, step=1,
+                              help="Cuántos cuadros por segundo se analizan. Se convierte a "
+                                   "1 de cada N según los FPS del video. Más alto = curvas más "
+                                   "suaves y más cómputo.")
 with s2:
-    max_seg = st.number_input("Segundos máximos", 5, 300, 160, step=5,
+    max_seg = st.number_input("Segundos máximos analizados", 5, 300, 160, step=5,
                               help="Acota el cómputo en videos largos.")
 with s3:
     dots = st.toggle("Puntos faciales", value=False,
                      help="Dibuja la malla facial sobre el video. Reprocesa al cambiar.")
-with s4:
-    reset = st.button("Reiniciar", width="stretch", type="secondary")
-
-if reset:
-    for key in list(st.session_state.keys()):
-        if key != "k": del st.session_state[key]
-    st.session_state.k += 1
-    st.rerun()
 
 # Controles vivos: si cambia un parámetro de proceso, exige reprocesar
-sig = (stride, max_seg, dots)
+sig = (fps_obj, max_seg, dots)
 if st.session_state.get("sig") != sig:
     for key in ("preds", "aus", "tiempos", "fps", "anot_path", "t_proc"):
         st.session_state.pop(key, None)
@@ -243,7 +245,7 @@ st.markdown(
     'para poder comparar las predicciones contra la verdad. Si subes un video cuyo nombre '
     'coincide con uno del dataset, se grafica también su valencia real.</div>',
     unsafe_allow_html=True)
-with st.popover("Ver nombres del dataset con valencia real"):
+with st.popover("Ver nombres del dataset"):
     st.caption("Sube un video con uno de estos nombres para superponer su valencia real:")
     st.text("   ".join(sorted(GROUND_TRUTH.keys())))
 
@@ -297,7 +299,7 @@ if "preds" not in st.session_state:
     prog = st.progress(0.0, text="Extrayendo Action Units…")
     t0 = time.time()
     fps, tiempos, aus, wrote = procesar_video(
-        st.session_state.in_path, stride, dots, max_seg, detector, prog, anot_path)
+        st.session_state.in_path, fps_obj, dots, max_seg, detector, prog, anot_path)
     prog.empty()
     if len(aus) <= TIMESTEPS:
         st.error(f"Solo se detectó rostro en {len(aus)} muestras (se necesitan más de "
@@ -402,3 +404,13 @@ for i in range(len(nombres)):
 if ag:
     st.dataframe(pd.DataFrame(ag), width="stretch", hide_index=True)
 st.caption("Concordancia entre las predicciones de los modelos (no su exactitud).")
+
+# ── Reiniciar (al final, después de los resultados) ───────────────
+st.markdown("<hr/>", unsafe_allow_html=True)
+_, rc, _ = st.columns([2, 1, 2])
+with rc:
+    if st.button("Reiniciar análisis", width="stretch", type="secondary"):
+        for key in list(st.session_state.keys()):
+            if key != "k": del st.session_state[key]
+        st.session_state.k += 1
+        st.rerun()
