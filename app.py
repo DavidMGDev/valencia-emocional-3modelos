@@ -196,9 +196,6 @@ legend = "".join(
 st.markdown(f"""
 <div class="vh-eyebrow">Computación afectiva · TEC</div>
 <h1 class="vh-title">Valencia emocional desde el rostro</h1>
-<p class="vh-sub">MediaPipe extrae las Action Units faciales y tres modelos predicen
-la valencia (de -1 a +1) cuadro a cuadro. Sube un video para comparar cómo se
-comportan en el tiempo.</p>
 <div class="vh-legend">{legend}</div>
 """, unsafe_allow_html=True)
 st.markdown("<hr/>", unsafe_allow_html=True)
@@ -223,7 +220,7 @@ with s1:
     stride = st.number_input("1 de cada N cuadros", 1, 60, 10, step=1,
                              help="Menor N: curvas más suaves, más cómputo.")
 with s2:
-    max_seg = st.number_input("Segundos máximos", 5, 120, 30, step=5,
+    max_seg = st.number_input("Segundos máximos", 5, 300, 160, step=5,
                               help="Acota el cómputo en videos largos.")
 with s3:
     dots = st.toggle("Puntos faciales", value=False,
@@ -237,10 +234,10 @@ if reset:
     st.session_state.k += 1
     st.rerun()
 
-# Controles vivos: si cambia un parámetro de proceso, invalida el resultado
+# Controles vivos: si cambia un parámetro de proceso, exige reprocesar
 sig = (stride, max_seg, dots)
 if st.session_state.get("sig") != sig:
-    for key in ("preds", "aus", "tiempos", "fps", "in_path", "anot_path", "t_proc"):
+    for key in ("preds", "aus", "tiempos", "fps", "anot_path", "t_proc"):
         st.session_state.pop(key, None)
     st.session_state.sig = sig
 
@@ -259,15 +256,43 @@ if video is None:
                        "No es recalculable sobre un video sin etiquetar.")
     st.stop()
 
-# ── Procesa ───────────────────────────────────────────────────────
-if "preds" not in st.session_state:
+# ── Guarda el archivo subido (barato, sin procesar) ───────────────
+vid_key = f"{st.session_state.k}-{video.name}-{video.size}"
+if st.session_state.get("vid_key") != vid_key:
     tmp = Path(tempfile.gettempdir()) / f"in_{st.session_state.k}_{video.name}"
     tmp.write_bytes(video.getbuffer())
+    st.session_state.vid_key = vid_key
+    st.session_state.in_path = str(tmp)
+    for key in ("preds", "aus", "tiempos", "fps", "anot_path", "t_proc"):
+        st.session_state.pop(key, None)
+
+# ── Reproducción (disponible apenas se sube) ──────────────────────
+st.markdown('<div class="vh-sec">Reproducción</div>', unsafe_allow_html=True)
+if dots and st.session_state.get("anot_path"):
+    st.video(st.session_state.anot_path)
+else:
+    st.video(st.session_state.in_path)
+
+# ── Procesar (paso explícito) ─────────────────────────────────────
+if "preds" not in st.session_state:
+    pc1, pc2 = st.columns([1, 2], gap="medium", vertical_alignment="center")
+    with pc1:
+        procesar = st.button("Procesar video", type="primary", use_container_width=True)
+    with pc2:
+        st.caption("Analiza el video con los tres modelos. Puede tardar según el rango y el muestreo.")
+    if not procesar:
+        st.stop()
     scaler, mlp, lstm, bigru = cargar_modelos()
-    detector = cargar_detector()
+    try:
+        detector = cargar_detector()
+    except Exception:
+        st.error("No se pudo iniciar MediaPipe en el servidor (falta una librería del sistema "
+                 "para extraer Action Units). Revisa los logs de despliegue.")
+        st.stop()
     prog = st.progress(0.0, text="Extrayendo Action Units…")
     t0 = time.time()
-    fps, tiempos, aus, anot = procesar_video(tmp, stride, dots, max_seg, detector, prog)
+    fps, tiempos, aus, anot = procesar_video(
+        st.session_state.in_path, stride, dots, max_seg, detector, prog)
     prog.empty()
     if len(aus) <= TIMESTEPS:
         st.error(f"Solo se detectó rostro en {len(aus)} muestras (se necesitan más de "
@@ -279,17 +304,12 @@ if "preds" not in st.session_state:
         anot_path = str(Path(tempfile.gettempdir()) / f"anot_{st.session_state.k}.mp4")
         imageio.mimwrite(anot_path, anot, fps=fps, codec="libx264", quality=7, macro_block_size=None)
     st.session_state.update(preds=preds, aus=aus, tiempos=tiempos, fps=fps,
-                            in_path=str(tmp), anot_path=anot_path, t_proc=time.time()-t0)
+                            anot_path=anot_path, t_proc=time.time()-t0)
+    st.rerun()
 
 preds = st.session_state.preds
 n_muestras = len(st.session_state.tiempos)
 dur = float(st.session_state.tiempos[-1]) if n_muestras else 0.0
-
-# ── Video ─────────────────────────────────────────────────────────
-if dots and st.session_state.get("anot_path"):
-    st.video(st.session_state.anot_path)
-else:
-    st.video(st.session_state.in_path)
 st.caption(f"{n_muestras} muestras · {dur:.1f}s analizados · {st.session_state.t_proc:.1f}s de proceso"
            + (" · puntos activos" if dots and st.session_state.get("anot_path") else ""))
 
