@@ -6,7 +6,7 @@ tres modelos en el tiempo.
 Features: upload, gráfica valencia-vs-tiempo (3 modelos), toggle de puntos de
 tracking, reproducción, reset, muestreo ajustable, comparación viva (stats + acuerdo).
 """
-import json, tempfile, time
+import gc, json, tempfile, time
 from pathlib import Path
 
 import numpy as np
@@ -14,9 +14,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-import torch
-import torch.nn as nn
 import joblib
+import onnxruntime as ort
 import cv2
 import imageio
 import mediapipe as mp
@@ -54,38 +53,13 @@ AU_MAP = {
     "AU20_r": ["mouthStretchLeft", "mouthStretchRight"], "AU25_r": ["jawOpen"],
 }
 
-class LSTMModel(nn.Module):
-    def __init__(self, n_features=12, hidden=64, dropout=0.2):
-        super().__init__()
-        self.lstm = nn.LSTM(n_features, hidden, batch_first=True)
-        self.drop = nn.Dropout(dropout); self.fc = nn.Linear(hidden, 1); self.tanh = nn.Tanh()
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        return self.tanh(self.fc(self.drop(out[:, -1, :])))
-
-class BiGRUAttention(nn.Module):
-    def __init__(self, n_features=12, gru_units=32, num_heads=4, dropout=0.3):
-        super().__init__()
-        hidden = gru_units * 2
-        self.bigru = nn.GRU(n_features, gru_units, batch_first=True, bidirectional=True)
-        self.ln1 = nn.LayerNorm(hidden)
-        self.attn = nn.MultiheadAttention(hidden, num_heads, dropout=dropout, batch_first=True)
-        self.fc1 = nn.Linear(hidden, 32); self.fc2 = nn.Linear(32, 1)
-        self.relu = nn.ReLU(); self.tanh = nn.Tanh(); self.drop = nn.Dropout(dropout)
-    def forward(self, x):
-        out, _ = self.bigru(x); out = self.ln1(out)
-        attn, _ = self.attn(out, out, out)
-        out = (out + attn).mean(dim=1)
-        out = self.drop(self.relu(self.fc1(out)))
-        return self.tanh(self.fc2(out))
-
 @st.cache_resource(show_spinner=False)
 def cargar_modelos():
     scaler = joblib.load(AQUI / "scaler.pkl")
     mlp = joblib.load(AQUI / "modelo_mlp.pkl")
-    lstm = LSTMModel(); lstm.load_state_dict(torch.load(AQUI / "modelo_lstm.pt", map_location="cpu")); lstm.eval()
-    bigru = BiGRUAttention(12, GRU_UNITS, NUM_HEADS, DROPOUT)
-    bigru.load_state_dict(torch.load(AQUI / "modelo_bigru.pt", map_location="cpu")); bigru.eval()
+    so = ort.SessionOptions(); so.intra_op_num_threads = 1
+    lstm = ort.InferenceSession(str(AQUI / "modelo_lstm.onnx"), so, providers=["CPUExecutionProvider"])
+    bigru = ort.InferenceSession(str(AQUI / "modelo_bigru.onnx"), so, providers=["CPUExecutionProvider"])
     return scaler, mlp, lstm, bigru
 
 @st.cache_resource(show_spinner=False)
@@ -106,16 +80,22 @@ def ccc(a, b):
     cov = ((a - a.mean()) * (b - b.mean())).mean()
     return float(2 * cov / (a.var() + b.var() + (a.mean() - b.mean())**2 + 1e-8))
 
-def procesar_video(ruta, stride, dibujar, max_seg, detector, prog):
+MAX_W = 640   # downscale para acotar RAM/CPU en el plan gratuito
+
+def procesar_video(ruta, stride, dibujar, max_seg, detector, prog, anot_path):
     cap = cv2.VideoCapture(str(ruta))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     max_frames = int(max_seg * fps) if max_seg else total
-    tiempos, aus, anot = [], [], []
+    tiempos, aus = [], []
+    writer = None   # escritura en streaming -> RAM constante
     fn = 0
     while True:
         ok, frame = cap.read()
         if not ok or fn >= max_frames: break
+        h, w = frame.shape[:2]
+        if w > MAX_W:
+            frame = cv2.resize(frame, (MAX_W, int(h * MAX_W / w)))
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         muestrear = (fn % stride == 0)
         if muestrear or dibujar:
@@ -125,26 +105,29 @@ def procesar_video(ruta, stride, dibujar, max_seg, detector, prog):
                 tiempos.append(fn / fps); aus.append(bs_to_aus(res.face_blendshapes[0]))
             if dibujar:
                 if tiene:
-                    h, w = rgb.shape[:2]
+                    hh, ww = rgb.shape[:2]
                     for lm in res.face_landmarks[0]:
-                        cv2.circle(rgb, (int(lm.x * w), int(lm.y * h)), 1, (79, 208, 168), -1)
-                anot.append(rgb)
+                        cv2.circle(rgb, (int(lm.x * ww), int(lm.y * hh)), 1, (79, 208, 168), -1)
+                if writer is None:
+                    writer = imageio.get_writer(anot_path, fps=fps, codec="libx264",
+                                                quality=7, macro_block_size=None)
+                writer.append_data(rgb)
         fn += 1
         if total:
             prog.progress(min(fn / max(1, min(total, max_frames)), 1.0))
     cap.release()
-    return fps, np.array(tiempos), np.array(aus, dtype=np.float32), anot
+    if writer is not None:
+        writer.close()
+    return fps, np.array(tiempos), np.array(aus, dtype=np.float32), (writer is not None)
 
 def predecir(aus, tiempos, scaler, mlp, lstm, bigru):
     Xs = scaler.transform(aus).astype(np.float32)
     out = {"NN1 MLP": (tiempos, np.clip(mlp.predict(Xs), -1, 1))}
     if len(Xs) > TIMESTEPS:
-        seqs = np.stack([Xs[i:i+TIMESTEPS] for i in range(len(Xs)-TIMESTEPS)])
+        seqs = np.stack([Xs[i:i+TIMESTEPS] for i in range(len(Xs)-TIMESTEPS)]).astype(np.float32)
         t_seq = tiempos[TIMESTEPS:]
-        with torch.no_grad():
-            t = torch.tensor(seqs)
-            out["NN2 LSTM"] = (t_seq, lstm(t).numpy().flatten())
-            out["NN3 BiGRU+Attn"] = (t_seq, bigru(t).numpy().flatten())
+        out["NN2 LSTM"] = (t_seq, lstm.run(["output"], {"input": seqs})[0].flatten())
+        out["NN3 BiGRU+Attn"] = (t_seq, bigru.run(["output"], {"input": seqs})[0].flatten())
     return out
 
 # ══════════════════════════════════════════════════════════════════
@@ -226,7 +209,7 @@ with s3:
     dots = st.toggle("Puntos faciales", value=False,
                      help="Dibuja la malla facial sobre el video. Reprocesa al cambiar.")
 with s4:
-    reset = st.button("Reiniciar", use_container_width=True, type="secondary")
+    reset = st.button("Reiniciar", width="stretch", type="secondary")
 
 if reset:
     for key in list(st.session_state.keys()):
@@ -251,7 +234,7 @@ if video is None:
     ref = AQUI / "comparacion_modelos.csv"
     if ref.exists():
         with st.expander("Precisión de referencia de los modelos"):
-            st.dataframe(pd.read_csv(ref), use_container_width=True, hide_index=True)
+            st.dataframe(pd.read_csv(ref), width="stretch", hide_index=True)
             st.caption("CCC / MSE / R² sobre las etiquetas reales del dataset (validación K-Fold). "
                        "No es recalculable sobre un video sin etiquetar.")
     st.stop()
@@ -277,7 +260,7 @@ else:
 if "preds" not in st.session_state:
     pc1, pc2 = st.columns([1, 2], gap="medium", vertical_alignment="center")
     with pc1:
-        procesar = st.button("Procesar video", type="primary", use_container_width=True)
+        procesar = st.button("Procesar video", type="primary", width="stretch")
     with pc2:
         st.caption("Analiza el video con los tres modelos. Puede tardar según el rango y el muestreo.")
     if not procesar:
@@ -289,22 +272,20 @@ if "preds" not in st.session_state:
         st.error("No se pudo iniciar MediaPipe en el servidor (falta una librería del sistema "
                  "para extraer Action Units). Revisa los logs de despliegue.")
         st.stop()
+    anot_path = str(Path(tempfile.gettempdir()) / f"anot_{st.session_state.k}.mp4")
     prog = st.progress(0.0, text="Extrayendo Action Units…")
     t0 = time.time()
-    fps, tiempos, aus, anot = procesar_video(
-        st.session_state.in_path, stride, dots, max_seg, detector, prog)
+    fps, tiempos, aus, wrote = procesar_video(
+        st.session_state.in_path, stride, dots, max_seg, detector, prog, anot_path)
     prog.empty()
     if len(aus) <= TIMESTEPS:
         st.error(f"Solo se detectó rostro en {len(aus)} muestras (se necesitan más de "
                  f"{TIMESTEPS}). Baja el N de muestreo o usa un video más largo o nítido.")
         st.stop()
     preds = predecir(aus, tiempos, scaler, mlp, lstm, bigru)
-    anot_path = None
-    if anot:
-        anot_path = str(Path(tempfile.gettempdir()) / f"anot_{st.session_state.k}.mp4")
-        imageio.mimwrite(anot_path, anot, fps=fps, codec="libx264", quality=7, macro_block_size=None)
     st.session_state.update(preds=preds, aus=aus, tiempos=tiempos, fps=fps,
-                            anot_path=anot_path, t_proc=time.time()-t0)
+                            anot_path=(anot_path if wrote else None), t_proc=time.time()-t0)
+    gc.collect()
     st.rerun()
 
 preds = st.session_state.preds
@@ -339,7 +320,7 @@ fig.update_layout(
     xaxis=dict(title="Tiempo (s)", gridcolor=BORDER, zeroline=False),
     hovermode="x unified",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"))
-st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 if not modelos_sel:
     st.caption("Selecciona al menos un modelo.")
 
@@ -355,7 +336,7 @@ for m in (modelos_sel or list(COL.keys())):
                       "Mín": round(float(v.min()), 3), "Máx": round(float(v.max()), 3),
                       "% positiva": round(float((v > 0).mean()) * 100, 1)})
 if filas:
-    st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True,
+    st.dataframe(pd.DataFrame(filas), width="stretch", hide_index=True,
                  column_config={"% positiva": st.column_config.NumberColumn(format="%.1f%%")})
 
 st.markdown('<div class="vh-sec" style="margin-top:1.6rem">Acuerdo entre modelos</div>', unsafe_allow_html=True)
@@ -371,6 +352,6 @@ for i in range(len(nombres)):
                        "CCC": round(ccc(va2, vb2), 3),
                        "Pearson": round(float(np.corrcoef(va2, vb2)[0, 1]), 3)})
 if ag:
-    st.dataframe(pd.DataFrame(ag), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(ag), width="stretch", hide_index=True)
 st.caption("Concordancia entre las predicciones de los modelos, no su exactitud: "
            "el video no tiene valencia real etiquetada.")

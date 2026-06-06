@@ -1,5 +1,5 @@
 streamlit>=1.40
-torch>=2.4
+onnxruntime>=1.17
 scikit-learn>=1.8,<1.9
 joblib>=1.5
 pandas>=2.2
