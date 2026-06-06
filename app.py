@@ -169,6 +169,9 @@ hr {{ border:0; border-top:1px solid {BORDER}; margin:1.6rem 0; }}
 .vh-chip b {{ color:{TEXT}; font-weight:600; }}
 .vh-sec {{ font-size:.72rem; letter-spacing:.14em; text-transform:uppercase;
   color:{MUTED}; font-weight:600; margin:.2rem 0 .7rem; }}
+.vh-how {{ display:flex; gap:1.7rem; flex-wrap:wrap; }}
+.vh-how > div {{ font-size:.9rem; color:{MUTED}; line-height:1.4; }}
+.vh-how b {{ color:{ACCENT}; font-family:'IBM Plex Mono',monospace; font-weight:500; margin-right:.5rem; }}
 
 /* Upload zone: calm, single focus */
 [data-testid="stFileUploaderDropzone"] {{ background:{PANEL}; border:1px dashed {BORDER};
@@ -203,19 +206,29 @@ st.markdown("<hr/>", unsafe_allow_html=True)
 if "k" not in st.session_state:
     st.session_state.k = 0
 
-# ── Barra de acciones (derecha): ajustes + reiniciar ──────────────
-_, a1, a2 = st.columns([6, 2, 2], gap="small", vertical_alignment="center")
-with a1:
-    with st.popover("Ajustes", use_container_width=True):
-        st.markdown('<div class="vh-sec">Muestreo</div>', unsafe_allow_html=True)
-        stride = st.number_input("Analizar 1 de cada N cuadros", 1, 60, 10, step=1,
-                                 help="Menor N: curvas más suaves, más cómputo.")
-        st.markdown('<div class="vh-sec">Procesamiento</div>', unsafe_allow_html=True)
-        max_seg = st.number_input("Segundos máximos a procesar", 5, 120, 30, step=5,
-                                  help="Acota el cómputo en videos largos.")
-        dots = st.toggle("Puntos de tracking facial", value=False,
-                         help="Dibuja la malla facial sobre el video. Reprocesa al cambiar.")
-with a2:
+# ── Cómo usar ─────────────────────────────────────────────────────
+st.markdown('<div class="vh-sec">Cómo usar</div>', unsafe_allow_html=True)
+st.markdown("""
+<div class="vh-how">
+  <div><b>1</b>Sube un video del rostro</div>
+  <div><b>2</b>Ajusta el muestreo y el rango</div>
+  <div><b>3</b>Compara los tres modelos en el tiempo</div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Ajustes (visibles, inline) ────────────────────────────────────
+st.markdown('<div class="vh-sec" style="margin-top:1.7rem">Ajustes</div>', unsafe_allow_html=True)
+s1, s2, s3, s4 = st.columns([3, 3, 3, 2], gap="medium", vertical_alignment="bottom")
+with s1:
+    stride = st.number_input("1 de cada N cuadros", 1, 60, 10, step=1,
+                             help="Menor N: curvas más suaves, más cómputo.")
+with s2:
+    max_seg = st.number_input("Segundos máximos", 5, 120, 30, step=5,
+                              help="Acota el cómputo en videos largos.")
+with s3:
+    dots = st.toggle("Puntos faciales", value=False,
+                     help="Dibuja la malla facial sobre el video. Reprocesa al cambiar.")
+with s4:
     reset = st.button("Reiniciar", use_container_width=True, type="secondary")
 
 if reset:
@@ -231,13 +244,13 @@ if st.session_state.get("sig") != sig:
         st.session_state.pop(key, None)
     st.session_state.sig = sig
 
+st.markdown('<div class="vh-sec" style="margin-top:1.7rem">Video</div>', unsafe_allow_html=True)
 video = st.file_uploader("Video", type=["mp4", "mov", "avi", "mkv"],
                          key=f"up_{st.session_state.k}", label_visibility="collapsed")
 
 # ── Empty state: mínimo y calmo ───────────────────────────────────
 if video is None:
-    st.caption("Un primer plano del rostro funciona mejor. mp4, mov, avi o mkv. "
-               "Ajusta el muestreo en Ajustes.")
+    st.caption("Un primer plano del rostro funciona mejor.")
     ref = AQUI / "comparacion_modelos.csv"
     if ref.exists():
         with st.expander("Precisión de referencia de los modelos"):
