@@ -24,14 +24,14 @@ from mediapipe.tasks.python import vision as mp_vision
 
 # ── Paleta (data-viz: un color por modelo) ────────────────────────
 COL = {
-    "NN1 MLP":        "#6FB1E0",
-    "NN2 LSTM":       "#4FD0A8",
-    "NN3 BiGRU+Attn": "#F07167",
+    "MLP":        "#6FB1E0",
+    "LSTM":       "#4FD0A8",
+    "BiGRU+Attn": "#F07167",
 }
 ROL = {
-    "NN1 MLP":        "Baseline",
-    "NN2 LSTM":       "Recurrente",
-    "NN3 BiGRU+Attn": "Atención",
+    "MLP":        "Baseline",
+    "LSTM":       "Recurrente",
+    "BiGRU+Attn": "Atención",
 }
 ACCENT = "#E0A33C"; MUTED = "#A8A296"; PANEL = "#1F1D18"
 BORDER = "#322E26"; TEXT = "#ECE8E0"; BG = "#161512"
@@ -122,12 +122,12 @@ def procesar_video(ruta, stride, dibujar, max_seg, detector, prog, anot_path):
 
 def predecir(aus, tiempos, scaler, mlp, lstm, bigru):
     Xs = scaler.transform(aus).astype(np.float32)
-    out = {"NN1 MLP": (tiempos, np.clip(mlp.predict(Xs), -1, 1))}
+    out = {"MLP": (tiempos, np.clip(mlp.predict(Xs), -1, 1))}
     if len(Xs) > TIMESTEPS:
         seqs = np.stack([Xs[i:i+TIMESTEPS] for i in range(len(Xs)-TIMESTEPS)]).astype(np.float32)
         t_seq = tiempos[TIMESTEPS:]
-        out["NN2 LSTM"] = (t_seq, lstm.run(["output"], {"input": seqs})[0].flatten())
-        out["NN3 BiGRU+Attn"] = (t_seq, bigru.run(["output"], {"input": seqs})[0].flatten())
+        out["LSTM"] = (t_seq, lstm.run(["output"], {"input": seqs})[0].flatten())
+        out["BiGRU+Attn"] = (t_seq, bigru.run(["output"], {"input": seqs})[0].flatten())
     return out
 
 # ══════════════════════════════════════════════════════════════════
@@ -177,8 +177,8 @@ legend = "".join(
     f'<div class="vh-chip"><span class="vh-dot" style="background:{COL[m]}"></span>'
     f'<b>{m}</b> · {ROL[m]}</div>' for m in COL)
 st.markdown(f"""
-<div class="vh-eyebrow">Computación afectiva · TEC</div>
-<h1 class="vh-title">Valencia emocional desde el rostro</h1>
+<div class="vh-eyebrow">Valencia Emocional · UNAD · TEC</div>
+<h1 class="vh-title">Predicción de valencia desde el rostro</h1>
 <div class="vh-legend">{legend}</div>
 """, unsafe_allow_html=True)
 st.markdown("<hr/>", unsafe_allow_html=True)
@@ -234,7 +234,9 @@ if video is None:
     ref = AQUI / "comparacion_modelos.csv"
     if ref.exists():
         with st.expander("Precisión de referencia de los modelos"):
-            st.dataframe(pd.read_csv(ref), width="stretch", hide_index=True)
+            dfr = pd.read_csv(ref)
+            dfr["Modelo"] = dfr["Modelo"].str.replace(r"NN\d\s+", "", regex=True)
+            st.dataframe(dfr, width="stretch", hide_index=True)
             st.caption("CCC / MSE / R² sobre las etiquetas reales del dataset (validación K-Fold). "
                        "No es recalculable sobre un video sin etiquetar.")
     st.stop()
@@ -308,7 +310,7 @@ fig = go.Figure()
 for m in (modelos_sel or []):
     if m in preds:
         t, v = preds[m]
-        fig.add_trace(go.Scatter(x=t, y=v, name=m.split()[0], mode="lines",
+        fig.add_trace(go.Scatter(x=t, y=v, name=m, mode="lines",
                       line=dict(color=COL[m], width=2.4),
                       hovertemplate=f"<b>{m}</b><br>%{{x:.1f}}s · %{{y:.3f}}<extra></extra>"))
 fig.add_hline(y=0, line=dict(color=BORDER, width=1, dash="dot"))
@@ -348,7 +350,7 @@ for i in range(len(nombres)):
         n = min(len(va), len(vb))
         if n >= 2:
             va2, vb2 = va[-n:], vb[-n:]
-            ag.append({"Par": f"{nombres[i].split()[0]} ↔ {nombres[j].split()[0]}",
+            ag.append({"Par": f"{nombres[i]} ↔ {nombres[j]}",
                        "CCC": round(ccc(va2, vb2), 3),
                        "Pearson": round(float(np.corrcoef(va2, vb2)[0, 1]), 3)})
 if ag:
