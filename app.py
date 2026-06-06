@@ -43,6 +43,12 @@ NUM_HEADS = CFG["NUM_HEADS"]; DROPOUT = CFG["DROPOUT"]
 AU_COLS = CFG["AU_COLS"]; ESCALA = CFG["ESCALA_FACS"]
 TASK = str(AQUI / "face_landmarker.task")
 
+# Valencia real (ground truth) por nombre de archivo. Solo etiquetas, sin rostros.
+GROUND_TRUTH = json.loads((AQUI / "ground_truth.json").read_text())
+GT_NAME = "Real (dataset)"
+GT_COL  = "#ECE8E0"
+DATASET_SKIP = 141   # cadencia de muestreo del dataset (~4.7s a 30fps)
+
 AU_MAP = {
     "AU01_r": ["browInnerUp"], "AU02_r": ["browOuterUpLeft", "browOuterUpRight"],
     "AU04_r": ["browDownLeft", "browDownRight"], "AU05_r": ["eyeWideLeft", "eyeWideRight"],
@@ -155,6 +161,9 @@ hr {{ border:0; border-top:1px solid {BORDER}; margin:1.6rem 0; }}
 .vh-how {{ display:flex; gap:1.7rem; flex-wrap:wrap; }}
 .vh-how > div {{ font-size:.9rem; color:{MUTED}; line-height:1.4; }}
 .vh-how b {{ color:{ACCENT}; font-family:'IBM Plex Mono',monospace; font-weight:500; margin-right:.5rem; }}
+.vh-note {{ border:1px solid {BORDER}; background:{PANEL}; border-radius:10px;
+  padding:.75rem .95rem; font-size:.82rem; color:{MUTED}; line-height:1.55; margin-top:.4rem; }}
+.vh-note b {{ color:{TEXT}; font-weight:600; }}
 
 /* Upload zone: calm, single focus */
 [data-testid="stFileUploaderDropzone"] {{ background:{PANEL}; border:1px dashed {BORDER};
@@ -228,6 +237,16 @@ st.markdown('<div class="vh-sec" style="margin-top:1.7rem">Video</div>', unsafe_
 video = st.file_uploader("Video", type=["mp4", "mov", "avi", "mkv"],
                          key=f"up_{st.session_state.k}", label_visibility="collapsed")
 
+st.markdown(
+    '<div class="vh-note"><b>Privacidad:</b> los videos del dataset no se suben ni se '
+    'almacenan aquí. Solo la <b>valencia real</b> está incluida por nombre de archivo, '
+    'para poder comparar las predicciones contra la verdad. Si subes un video cuyo nombre '
+    'coincide con uno del dataset, se grafica también su valencia real.</div>',
+    unsafe_allow_html=True)
+with st.popover("Ver nombres del dataset con valencia real"):
+    st.caption("Sube un video con uno de estos nombres para superponer su valencia real:")
+    st.text("   ".join(sorted(GROUND_TRUTH.keys())))
+
 # ── Empty state: mínimo y calmo ───────────────────────────────────
 if video is None:
     st.caption("Un primer plano del rostro funciona mejor.")
@@ -285,6 +304,11 @@ if "preds" not in st.session_state:
                  f"{TIMESTEPS}). Baja el N de muestreo o usa un video más largo o nítido.")
         st.stop()
     preds = predecir(aus, tiempos, scaler, mlp, lstm, bigru)
+    stem = Path(video.name).stem
+    if stem in GROUND_TRUTH:
+        gv = np.array(GROUND_TRUTH[stem], dtype=float)
+        gt_times = (DATASET_SKIP // 2 + np.arange(len(gv)) * DATASET_SKIP) / fps
+        preds[GT_NAME] = (gt_times, gv)
     st.session_state.update(preds=preds, aus=aus, tiempos=tiempos, fps=fps,
                             anot_path=(anot_path if wrote else None), t_proc=time.time()-t0)
     gc.collect()
@@ -302,16 +326,21 @@ gc1, gc2 = st.columns([1, 1], gap="small", vertical_alignment="center")
 with gc1:
     st.markdown('<div class="vh-sec" style="margin-bottom:0">Valencia vs tiempo</div>', unsafe_allow_html=True)
 with gc2:
+    opciones = list(COL.keys()) + ([GT_NAME] if GT_NAME in preds else [])
     modelos_sel = st.segmented_control(
-        "Modelos", list(COL.keys()), selection_mode="multi",
-        default=list(COL.keys()), label_visibility="collapsed")
+        "Modelos", opciones, selection_mode="multi",
+        default=opciones, label_visibility="collapsed")
 
 fig = go.Figure()
 for m in (modelos_sel or []):
     if m in preds:
         t, v = preds[m]
-        fig.add_trace(go.Scatter(x=t, y=v, name=m, mode="lines",
-                      line=dict(color=COL[m], width=2.4),
+        es_gt = (m == GT_NAME)
+        fig.add_trace(go.Scatter(x=t, y=v, name=m,
+                      mode="lines+markers" if es_gt else "lines",
+                      line=dict(color=GT_COL if es_gt else COL[m], width=2.4,
+                                dash="dash" if es_gt else "solid"),
+                      marker=dict(size=5, color=GT_COL) if es_gt else None,
                       hovertemplate=f"<b>{m}</b><br>%{{x:.1f}}s · %{{y:.3f}}<extra></extra>"))
 fig.add_hline(y=0, line=dict(color=BORDER, width=1, dash="dot"))
 fig.update_layout(
@@ -341,8 +370,25 @@ if filas:
     st.dataframe(pd.DataFrame(filas), width="stretch", hide_index=True,
                  column_config={"% positiva": st.column_config.NumberColumn(format="%.1f%%")})
 
+# Exactitud vs valencia real (solo si el video tiene ground truth)
+if GT_NAME in preds:
+    gt_t, gv = preds[GT_NAME]
+    ex = []
+    for m in COL:
+        if m in preds and (not modelos_sel or m in modelos_sel) and len(gv) >= 2:
+            mt, mv = preds[m]
+            mv_i = np.interp(gt_t, mt, mv)   # predicción remuestreada a los instantes reales
+            ex.append({"Modelo": m, "CCC vs real": round(ccc(mv_i, gv), 3),
+                       "Pearson": round(float(np.corrcoef(mv_i, gv)[0, 1]), 3)})
+    if ex:
+        st.markdown('<div class="vh-sec" style="margin-top:1.6rem">Exactitud vs valencia real</div>',
+                    unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame(ex), width="stretch", hide_index=True)
+        st.caption("CCC y Pearson de cada modelo contra la valencia real del dataset "
+                   "(predicciones remuestreadas a los instantes etiquetados). Mayor = mejor.")
+
 st.markdown('<div class="vh-sec" style="margin-top:1.6rem">Acuerdo entre modelos</div>', unsafe_allow_html=True)
-nombres = [n for n in (modelos_sel or list(COL.keys())) if n in preds]
+nombres = [n for n in (modelos_sel or list(COL.keys())) if n in preds and n in COL]
 ag = []
 for i in range(len(nombres)):
     for j in range(i + 1, len(nombres)):
@@ -355,5 +401,4 @@ for i in range(len(nombres)):
                        "Pearson": round(float(np.corrcoef(va2, vb2)[0, 1]), 3)})
 if ag:
     st.dataframe(pd.DataFrame(ag), width="stretch", hide_index=True)
-st.caption("Concordancia entre las predicciones de los modelos, no su exactitud: "
-           "el video no tiene valencia real etiquetada.")
+st.caption("Concordancia entre las predicciones de los modelos (no su exactitud).")
