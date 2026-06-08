@@ -215,7 +215,7 @@ st.markdown("""
 
 # ── Ajustes (visibles, inline) ────────────────────────────────────
 st.markdown('<div class="vh-sec" style="margin-top:1.7rem">Ajustes</div>', unsafe_allow_html=True)
-s1, s2, s3 = st.columns(3, gap="medium", vertical_alignment="bottom")
+s1, s2 = st.columns(2, gap="medium", vertical_alignment="bottom")
 with s1:
     fps_obj = st.number_input("Cuadros por segundo", 1, 30, 3, step=1,
                               help="Cuántos cuadros por segundo se analizan. Se convierte a "
@@ -224,12 +224,10 @@ with s1:
 with s2:
     max_seg = st.number_input("Segundos máximos analizados", 5, 300, 160, step=5,
                               help="Acota el cómputo en videos largos.")
-with s3:
-    dots = st.toggle("Puntos faciales", value=False,
-                     help="Dibuja la malla facial sobre el video. Reprocesa al cambiar.")
 
 # Controles vivos: si cambia un parámetro de proceso, exige reprocesar
-sig = (fps_obj, max_seg, dots)
+# (el toggle de puntos NO entra aquí: solo cambia visibilidad, no reprocesa)
+sig = (fps_obj, max_seg)
 if st.session_state.get("sig") != sig:
     for key in ("preds", "aus", "tiempos", "fps", "anot_path", "t_proc"):
         st.session_state.pop(key, None)
@@ -273,8 +271,13 @@ if st.session_state.get("vid_key") != vid_key:
         st.session_state.pop(key, None)
 
 # ── Reproducción (disponible apenas se sube) ──────────────────────
-st.markdown('<div class="vh-sec">Reproducción</div>', unsafe_allow_html=True)
-if dots and st.session_state.get("anot_path"):
+rep1, rep2 = st.columns([3, 2], gap="small", vertical_alignment="center")
+with rep1:
+    st.markdown('<div class="vh-sec" style="margin-bottom:0">Reproducción</div>', unsafe_allow_html=True)
+with rep2:
+    ver_puntos = st.toggle("Puntos faciales", value=False, key="ver_puntos",
+                           help="Muestra u oculta la malla facial. No reprocesa el video.")
+if ver_puntos and st.session_state.get("anot_path"):
     st.video(st.session_state.anot_path)
 else:
     st.video(st.session_state.in_path)
@@ -285,7 +288,8 @@ if "preds" not in st.session_state:
     with pc1:
         procesar = st.button("Procesar video", type="primary", width="stretch")
     with pc2:
-        st.caption("Analiza el video con los tres modelos. Puede tardar según el rango y el muestreo.")
+        st.caption("Analiza el video con los tres modelos y calcula la malla facial. "
+                   "Puede tardar según los segundos analizados.")
     if not procesar:
         st.stop()
     scaler, mlp, lstm, bigru = cargar_modelos()
@@ -299,7 +303,7 @@ if "preds" not in st.session_state:
     prog = st.progress(0.0, text="Extrayendo Action Units…")
     t0 = time.time()
     fps, tiempos, aus, wrote = procesar_video(
-        st.session_state.in_path, fps_obj, dots, max_seg, detector, prog, anot_path)
+        st.session_state.in_path, fps_obj, True, max_seg, detector, prog, anot_path)
     prog.empty()
     if len(aus) <= TIMESTEPS:
         st.error(f"Solo se detectó rostro en {len(aus)} muestras (se necesitan más de "
@@ -319,8 +323,7 @@ if "preds" not in st.session_state:
 preds = st.session_state.preds
 n_muestras = len(st.session_state.tiempos)
 dur = float(st.session_state.tiempos[-1]) if n_muestras else 0.0
-st.caption(f"{n_muestras} muestras · {dur:.1f}s analizados · {st.session_state.t_proc:.1f}s de proceso"
-           + (" · puntos activos" if dots and st.session_state.get("anot_path") else ""))
+st.caption(f"{n_muestras} muestras · {dur:.1f}s analizados · {st.session_state.t_proc:.1f}s de proceso")
 
 # ── Gráfica ───────────────────────────────────────────────────────
 st.markdown("<hr/>", unsafe_allow_html=True)
