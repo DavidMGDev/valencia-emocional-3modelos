@@ -271,12 +271,19 @@ if st.session_state.get("vid_key") != vid_key:
         st.session_state.pop(key, None)
 
 # ── Reproducción (disponible apenas se sube) ──────────────────────
-rep1, rep2 = st.columns([3, 2], gap="small", vertical_alignment="center")
-with rep1:
-    st.markdown('<div class="vh-sec" style="margin-bottom:0">Reproducción</div>', unsafe_allow_html=True)
-with rep2:
-    ver_puntos = st.toggle("Puntos faciales", value=False, key="ver_puntos",
-                           help="Muestra u oculta la malla facial. No reprocesa el video.")
+# El toggle de puntos solo aparece una vez procesado (ya existe el video anotado).
+procesado = "preds" in st.session_state
+if procesado:
+    rep1, rep2 = st.columns([3, 2], gap="small", vertical_alignment="center")
+    with rep1:
+        st.markdown('<div class="vh-sec" style="margin-bottom:0">Reproducción</div>', unsafe_allow_html=True)
+    with rep2:
+        ver_puntos = st.toggle("Puntos faciales", value=False, key="ver_puntos",
+                               help="Muestra u oculta la malla facial. No reprocesa el video.")
+else:
+    st.markdown('<div class="vh-sec">Reproducción</div>', unsafe_allow_html=True)
+    ver_puntos = False
+
 if ver_puntos and st.session_state.get("anot_path"):
     st.video(st.session_state.anot_path)
 else:
